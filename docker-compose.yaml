@@ -40,6 +40,7 @@ services:
       - DB_NAME=movies_db
       - DB_USER=user_admin
       - DB_PASSWORD=super_secure_password
+      - KP_API_KEY=MD2BWNZ-3A64EXF-NN3E788-7XJGD5E
     depends_on:
       - db
 

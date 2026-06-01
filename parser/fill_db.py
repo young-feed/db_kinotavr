@@ -9,127 +9,162 @@ DB_NAME = os.getenv("DB_NAME", "movies_db")
 DB_USER = os.getenv("DB_USER", "user_admin")
 DB_PASS = os.getenv("DB_PASSWORD", "super_secure_password")
 
-KP_API_KEY = os.getenv("KP_API_KEY", "YOUR_KP_API_KEY")
+# Токен Кинопоиска (Рекомендуется получить бесплатный токен на kinopoisk.dev)
+KP_API_KEY = os.getenv("KP_API_KEY", "MD2BWNZ-3A64EXF-NN3E788-7XJGD5E")
+KP_API_URL = "https://api.kinopoisk.dev/v1.4/movie"
 
 def get_db_connection():
     return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
 
 def determine_movie_colors(genres: list, description: str = "") -> list:
-    """
-    Автоматическая раскладка фильмов по цветам (настроениям) KinoTavr на основе жанров.
-    В будущем этот блок можно заменить вызовом локального ИИ.
-    """
+    """Автоматическая раскладка фильмов по 6 цветам KinoTavr на основе жанров"""
     assigned_colors = []
     genres = [g.lower() for g in genres]
     desc = description.lower() if description else ""
     
-    if any(g in genres for g in ["ужасы", "хоррор"]):
+    if any(g in genres for g in ["ужасы", "хоррор"]): 
         assigned_colors.append("black")       # Страх
-        
-    if any(g in genres for g in ["боевик", "криминал"]):
-        if any(w in desc for w in ["убийство", "месть", "мафия", "банды", "оружие"]):
-            assigned_colors.append("crimson") # Жестокость
-            
-    if any(g in genres for g in ["драма", "мелодрама"]):
+    if any(g in genres for g in ["боевик", "криминал"]) and any(w in desc for w in ["месть", "убийство", "мафия", "банды"]): 
+        assigned_colors.append("crimson")     # Жестокость
+    if any(g in genres for g in ["драма", "мелодрама"]): 
         assigned_colors.append("deep_blue")   # Грусть
-        
-    if any(g in genres for g in ["комедия", "семейный", "мультфильм"]):
+    if any(g in genres for g in ["комедия", "семейный", "мультфильм"]): 
         assigned_colors.append("yellow")      # Радость
-        
-    if any(g in genres for g in ["фантастика", "фэнтези", "приключения"]):
+    if any(g in genres for g in ["фантастика", "фэнтези", "приключения"]): 
         assigned_colors.append("purple")      # Загадочность
-        
-    if any(g in genres for g in ["детектив", "триллер"]):
+    if any(g in genres for g in ["детектив", "триллер"]): 
         assigned_colors.append("emerald")     # Интрига
-        
-    if not assigned_colors:
-        assigned_colors.append("emerald")     # Дефолт, если ничего не подошло
-        
-    return list(set(assigned_colors))
+    
+    return list(set(assigned_colors)) if assigned_colors else ["emerald"]
 
 def search_rutube_link(title: str, year: int) -> str:
-    """ Скрипт автоматического поиска зеркал на Rutube по названию """
+    """Автоматический поиск рабочих зеркал видеофайлов на Rutube"""
     try:
         query = f"{title} {year} смотреть фильм"
         url = f"https://rutube.ru/api/search/video/?query={requests.utils.quote(query)}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         if response.status_code == 200:
             results = response.json().get("results", [])
-            # Защита от трейлеров: ищем видео длительностью больше 40 минут (2400 секунд)
             for video in results:
+                # Фильтр трейлеров: длительность видео должна быть больше 40 минут (2400 секунд)
                 if video.get("duration", 0) > 2400: 
                     return video.get("video_url")
-            if results:
+            if results: 
                 return results[0].get("video_url")
     except Exception as e:
-        print(f"Ошибка Rutube поиска для '{title}': {e}")
+        print(f"[-] Ошибка поиска Rutube для {title}: {e}")
     return None
 
-def fetch_movies_from_api():
-    """ Имитация ответа от KinoPoisk API Unofficial / kinopoisk.dev """
-    return [
-        {
-            "id": 535341, "name": "1+1", "year": 2011,
-            "description": "Пострадав в результате несчастного случая, богатый аристократ Филипп нанимает в помощники человека...",
-            "poster": {"url": "https://avatars.mds.yandex.net/get-kinopoisk-image/.../orig"},
-            "genres": [{"name": "комедия"}, {"name": "драма"}]
-        },
-        {
-            "id": 448, "name": "Начало", "year": 2010,
-            "description": "Кобб — талантливый вор, лучший в опасном искусстве извлечения ценных секретов из подсознания во время сна.",
-            "poster": {"url": "https://avatars.mds.yandex.net/get-kinopoisk-image/.../orig"},
-            "genres": [{"name": "фантастика"}, {"name": "триллер"}]
-        }
-    ]
+def fetch_movies_from_kinopoisk(limit=50, page=1):
+    """Запрос реальных фильмов из API Кинопоиска"""
+    print(f"[+] Скачиваем порцию фильмов с Кинопоиска: Страница {page}, Количество {limit}...")
+    
+    headers = {
+        "accept": "application/json",
+        "X-API-KEY": KP_API_KEY
+    }
+    
+    # Запрашиваем только полнометражные художественные фильмы с высоким рейтингом, у которых есть описание и постер
+    params = {
+        "page": page,
+        "limit": limit,
+        "selectFields": ["id", "name", "year", "description", "poster", "genres"],
+        "type": "movie",
+        "rating.kp": "7-10", 
+        "votes.kp": "10000-10000000"
+    }
+    
+    try:
+        response = requests.get(KP_API_URL, headers=headers, params=params, timeout=10)
+        if response.status_code == 200:
+            return response.json().get("docs", [])
+        else:
+            print(f"[-] Ошибка API Кинопоиска ({response.status_code}): {response.text}")
+    except Exception as e:
+        print(f"[-] Не удалось связаться с API Кинопоиска: {e}")
+    return []
 
 def save_to_database(conn, movie_data):
+    """Обработка и сохранение фильма в БД"""
     cursor = conn.cursor()
-    kp_id = movie_data["id"]
-    title = movie_data["name"]
-    year = movie_data["year"]
-    desc = movie_data["description"]
-    poster = movie_data["poster"]["url"]
-    kp_url = f"https://www.kinopoisk.ru/film/{kp_id}/"
-    genres_list = [g["name"] for g in movie_data["genres"]]
+    kp_id = movie_data.get("id")
+    title = movie_data.get("name")
+    year = movie_data.get("year")
+    desc = movie_data.get("description", "")
     
+    # Проверка на наличие постера
+    poster_data = movie_data.get("poster")
+    poster_url = poster_data.get("url") if poster_data else None
+    
+    if not title or not kp_id:
+        return # Пропускаем битые записи API
+        
+    kp_url = f"https://www.kinopoisk.ru/film/{kp_id}/"
+    
+    # 1. Поиск плеера на Rutube
     rutube_url = search_rutube_link(title, year)
     
     try:
+        # 2. Запись в таблицу фильмов (если фильм уже есть — обновим Rutube ссылку)
         cursor.execute("""
             INSERT INTO movies (kinopoisk_id, title, year, description, poster_url, kp_url, rutube_url)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (kinopoisk_id) DO UPDATE SET rutube_url = EXCLUDED.rutube_url
+            VALUES (%s, %s, %s, %s, %s, %s, %s) 
+            ON CONFLICT (kinopoisk_id) DO UPDATE SET rutube_url = EXCLUDED.rutube_url 
             RETURNING id;
-        """, (kp_id, title, year, desc, poster, kp_url, rutube_url))
+        """, (kp_id, title, year, desc, poster_url, kp_url, rutube_url))
         
         movie_id = cursor.fetchone()[0]
-        detected_colors = determine_movie_colors(genres_list, desc)
         
-        for color_name in detected_colors:
-            cursor.execute("SELECT id FROM colors WHERE color_name = %s;", (color_name,))
-            color_res = cursor.fetchone()
-            if color_res:
-                cursor.execute("INSERT INTO movie_colors (movie_id, color_id) VALUES (%s, %s) ON CONFLICT DO NOTHING;", (movie_id, color_res[0]))
+        # 3. Извлечение жанров и автоматическая покраска
+        genres_list = [g["name"] for g in movie_data.get("genres", []) if "name" in g]
+        colors = determine_movie_colors(genres_list, desc)
+        
+        # 4. Привязка фильма к его цветам в таблице связей
+        for c in colors:
+            cursor.execute("SELECT id FROM colors WHERE color_name = %s;", (c,))
+            c_res = cursor.fetchone()
+            if c_res:
+                cursor.execute("""
+                    INSERT INTO movie_colors (movie_id, color_id) 
+                    VALUES (%s, %s) 
+                    ON CONFLICT DO NOTHING;
+                """, (movie_id, c_res[0]))
                 
         conn.commit()
-        print(f"Фильм '{title}' успешно добавлен и окрашен: {detected_colors}")
+        print(f"[🟢] Успешно добавлен: '{title}' ({year}) -> Цвета: {colors}")
     except Exception as e:
         conn.rollback()
-        print(f"Ошибка сохранения {title}: {e}")
+        print(f"[🔴] Ошибка сохранения '{title}': {e}")
     finally:
         cursor.close()
 
 def main():
-    try:
-        conn = get_db_connection()
-        movies = fetch_movies_from_api()
-        for movie in movies:
-            save_to_database(conn, movie)
-            time.sleep(1)
-        conn.close()
-    except Exception as e:
-        print(f"Ошибка: {e}")
+    print("[*] Парсер проекта KinoTavr запущен.")
+    
+    # Получаем 100 фильмов: 2 страницы по 50 записей
+    all_movies = []
+    for page in [1, 2]:
+        movies_batch = fetch_movies_from_kinopoisk(limit=50, page=page)
+        if movies_batch:
+            all_movies.extend(movies_batch)
+        time.sleep(1) # Пауза между страницами, чтобы не спамить API
+        
+    if not all_movies:
+        print("[-] API Кинопоиска вернул пустой список. Проверьте ваш API-ключ.")
+        return
+
+    print(f"[+] Всего получено {len(all_movies)} фильмов для обработки.")
+    
+    conn = get_db_connection()
+    
+    # Наполняем базу
+    for index, movie in enumerate(all_movies, start=1):
+        save_to_database(conn, movie)
+        # Небольшая задержка (0.3 сек) между фильмами, чтобы Rutube API не заблокировал за частые запросы
+        time.sleep(0.3) 
+        
+    conn.close()
+    print(f"[+] Скрипт завершил работу. База KinoTavr успешно обновлена!")
 
 if __name__ == "__main__":
     main()
