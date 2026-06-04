@@ -38,22 +38,31 @@ def determine_movie_colors(genres: list, description: str = "") -> list:
     return list(set(assigned_colors)) if assigned_colors else ["emerald"]
 
 def search_rutube_link(title: str, year: int) -> str:
-    """Автоматический поиск рабочих зеркал видеофайлов на Rutube"""
+    """Безопасный поиск зеркал на Rutube с защитой от падения скрипта"""
     try:
         query = f"{title} {year} смотреть фильм"
         url = f"https://rutube.ru/api/search/video/?query={requests.utils.quote(query)}"
+        
+        # Обязательно передаем таймаут, чтобы скрипт не завис навсегда, если Rutube лагает
         response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
-        if response.status_code == 200:
-            results = response.json().get("results", [])
-            for video in results:
-                # Фильтр трейлеров: длительность видео должна быть больше 40 минут (2400 секунд)
-                if video.get("duration", 0) > 2400: 
-                    return video.get("video_url")
-            if results: 
-                return results[0].get("video_url")
+        
+        # Если Rutube вернул ошибку 429 (Too Many Requests) или любую другую
+        if response.status_code != 200:
+            print(f"[!] Rutube вернул статус {response.status_code} для '{title}'. Возможно, лимит запросов.")
+            return None
+            
+        results = response.json().get("results", [])
+        for video in results:
+            if video.get("duration", 0) > 2400: 
+                return video.get("video_url")
+        if results: 
+            return results[0].get("video_url")
+            
     except Exception as e:
+        # Если сеть отвалилась или Rutube сбросил соединение, скрипт НЕ упадет, а пойдет дальше
         print(f"[-] Ошибка поиска Rutube для {title}: {e}")
     return None
+
 
 def fetch_movies_from_kinopoisk(limit=50, page=1):
     """Запрос реальных фильмов из API Кинопоиска"""
@@ -141,30 +150,42 @@ def save_to_database(conn, movie_data):
 def main():
     print("[*] Парсер проекта KinoTavr запущен.")
     
-    # Получаем 100 фильмов: 2 страницы по 50 записей
     all_movies = []
+    # Качаем порциями по 50 штук
     for page in [1, 2]:
-        movies_batch = fetch_movies_from_kinopoisk(limit=50, page=page)
-        if movies_batch:
-            all_movies.extend(movies_batch)
-        time.sleep(1) # Пауза между страницами, чтобы не спамить API
-        
+        try:
+            movies_batch = fetch_movies_from_kinopoisk(limit=50, page=page)
+            if movies_batch:
+                all_movies.extend(movies_batch)
+            # Ждем 2 секунды между страницами Кинопоиска
+            time.sleep(2) 
+        except Exception as e:
+            print(f"[🔴] Ошибка при скачивании страницы {page} с Кинопоиска: {e}")
+            
     if not all_movies:
-        print("[-] API Кинопоиска вернул пустой список. Проверьте ваш API-ключ.")
+        print("[-] Не удалось получить фильмы. Скрипт завершает работу.")
         return
 
     print(f"[+] Всего получено {len(all_movies)} фильмов для обработки.")
     
-    conn = get_db_connection()
+    try:
+        conn = get_db_connection()
+    except Exception as e:
+        print(f"[🔴] Не удалось подключиться к базе данных: {e}")
+        return
     
-    # Наполняем базу
+    # Запускаем цикл обработки
     for index, movie in enumerate(all_movies, start=1):
-        save_to_database(conn, movie)
-        # Небольшая задержка (0.3 сек) между фильмами, чтобы Rutube API не заблокировал за частые запросы
-        time.sleep(0.3) 
+        try:
+            save_to_database(conn, movie)
+        except Exception as e:
+            # Обернули вызов в try-except: если на 3-м фильме упадет база или API,
+            # скрипт просто выведет ошибку и ПЕРЕЙДЕТ К 4-МУ ФИЛЬМУ, а не выключится целиком
+            print(f"[🔴] Критическая ошибка при обработке фильма №{index}: {e}")
+            
+        # УВЕЛИЧИВАЕМ ПАУЗУ ДО 1.5 - 2 СЕКУНД
+        # Это критически важно, чтобы Rutube не считал твой парсер за DDoS-атаку
+        time.sleep(1.5) 
         
     conn.close()
-    print(f"[+] Скрипт завершил работу. База KinoTavr успешно обновлена!")
-
-if __name__ == "__main__":
-    main()
+    print(f"[+] Скрипт завершил работу. Проверь базу данных!")
